@@ -1,0 +1,10 @@
+rgr2import
+*.o *.so *.a
+*.dSYM/ *.su *.idb *.pdb
+*.dSYM/ *.su *.idb *.pdb
+.DS_Store .DS_Store? ._* .Spotlight-V100 .Trashes ehthumbs.db Thumbs.db
+*~ *.swp *.swo .vscode/
+*.vscode/*
+*.vscode-test/
+*.vscode-test/*
+*.vscode-test-*
