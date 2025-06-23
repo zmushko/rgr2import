@@ -11,6 +11,15 @@
 #include <cjson/cJSON.h>
 #include <getopt.h>
 
+// Buffer size constants
+#define MAX_FILENAME 256
+#define MAX_TAG 256
+#define MAX_DATE 32
+#define MAX_FORMAT 8
+#define MAX_PATH 512
+#define MAX_URL 512
+#define MAX_FILEPATH 1024
+
 // Structure to hold response data
 struct http_response {
     char* data;
@@ -19,23 +28,27 @@ struct http_response {
 
 // Structure to hold photo information
 struct photo {
-    char name[256];
-    char tag[256];
-    char date[32];  // Date extracted from "d" field
+    char name[MAX_FILENAME];
+    char tag[MAX_TAG];
+    char date[MAX_DATE];  // Date extracted from "d" field
 };
 
 // Structure for progress tracking
 struct progress_data {
-    char filename[256];
+    char filename[MAX_FILENAME];
 };
 
 // Structure for CLI options
 struct cli_options {
-    char format[8];      // "dng", "jpg", "all"
-    char filename[256];  // Specific filename to download
-    char target_path[512]; // Alternative target path
+    char format[MAX_FORMAT];      // "dng", "jpg", "all"
+    char filename[MAX_FILENAME];  // Specific filename to download
+    char target_path[MAX_PATH]; // Alternative target path
     int help;
 };
+
+// Function prototypes
+void sanitize_filename(char* filename);
+int validate_path(const char* path);
 
 // Function to display help
 void show_help(const char* program_name) {
@@ -89,10 +102,19 @@ int parse_arguments(int argc, char* argv[], struct cli_options* options) {
             case 'F':
                 strncpy(options->filename, optarg, sizeof(options->filename) - 1);
                 options->filename[sizeof(options->filename) - 1] = '\0';
+                sanitize_filename(options->filename);
+                if (strlen(options->filename) == 0) {
+                    fprintf(stderr, "Error: Invalid filename after sanitization\n");
+                    return -1;
+                }
                 break;
             case 'p':
                 strncpy(options->target_path, optarg, sizeof(options->target_path) - 1);
                 options->target_path[sizeof(options->target_path) - 1] = '\0';
+                if (validate_path(options->target_path) != 0) {
+                    fprintf(stderr, "Error: Invalid path '%s'\n", optarg);
+                    return -1;
+                }
                 break;
             case '?':
                 return -1;
@@ -177,6 +199,44 @@ int file_exists(const char* filepath) {
     return access(filepath, F_OK) == 0;
 }
 
+// Function to sanitize filename by removing dangerous characters
+void sanitize_filename(char* filename) {
+    if (!filename) return;
+    
+    char* src = filename;
+    char* dst = filename;
+    
+    while (*src) {
+        // Allow alphanumeric, dots, hyphens, underscores
+        if ((*src >= 'a' && *src <= 'z') ||
+            (*src >= 'A' && *src <= 'Z') ||
+            (*src >= '0' && *src <= '9') ||
+            *src == '.' || *src == '-' || *src == '_') {
+            *dst++ = *src;
+        }
+        // Skip dangerous characters
+        src++;
+    }
+    *dst = '\0';
+}
+
+// Function to validate and sanitize path
+int validate_path(const char* path) {
+    if (!path || strlen(path) == 0) return -1;
+    
+    // Check for path traversal attempts
+    if (strstr(path, "..") != NULL) return -1;
+    if (strstr(path, "//") != NULL) return -1;
+    
+    // Check for null bytes
+    if (strlen(path) != strcspn(path, "\0")) return -1;
+    
+    // Check maximum path length
+    if (strlen(path) >= MAX_PATH) return -1;
+    
+    return 0;
+}
+
 // Function to convert timestamp to date folder format (YYYY-MM-DD)
 void timestamp_to_date_folder(const char* timestamp, char* date_folder) {
     // Parse timestamp and convert to YYYY-MM-DD format
@@ -190,13 +250,13 @@ void timestamp_to_date_folder(const char* timestamp, char* date_folder) {
         tm_info.tm_year -= 1900;  // tm_year is years since 1900
         tm_info.tm_mon -= 1;      // tm_mon is 0-11
         
-        snprintf(date_folder, 32, "%04d-%02d-%02d", 
+        snprintf(date_folder, MAX_DATE, "%04d-%02d-%02d", 
                 tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday);
     } else {
         // Fallback to current date if parsing fails
         t = time(NULL);
         struct tm* current_tm = localtime(&t);
-        strftime(date_folder, 32, "%Y-%m-%d", current_tm);
+        strftime(date_folder, MAX_DATE, "%Y-%m-%d", current_tm);
     }
 }
 
@@ -205,13 +265,31 @@ int download_photo(const char* base_url, const char* name, const char* tag, cons
     CURL* curl;
     CURLcode res;
     FILE* fp;
-    char url[512];
-    char filepath[1024];
-    char full_dir_path[512];
+    char url[MAX_URL];
+    char filepath[MAX_FILEPATH];
+    char full_dir_path[MAX_PATH];
     struct progress_data progress_data;
+    
+    // Validate input parameters
+    if (!base_url || !name || !tag || !date_folder || !base_path) {
+        fprintf(stderr, "Invalid parameters to download_photo\n");
+        return -1;
+    }
+    
+    // Validate base_path
+    if (validate_path(base_path) != 0) {
+        fprintf(stderr, "Invalid base path: %s\n", base_path);
+        return -1;
+    }
     
     // Create full directory path
     snprintf(full_dir_path, sizeof(full_dir_path), "%s/%s", base_path, date_folder);
+    
+    // Validate the full directory path
+    if (validate_path(full_dir_path) != 0) {
+        fprintf(stderr, "Invalid directory path: %s\n", full_dir_path);
+        return -1;
+    }
     
     // Create directory if it doesn't exist
     if (create_directory(full_dir_path) != 0) {
@@ -323,8 +401,16 @@ int parse_photos_json(const char* json_data, struct photo** photos, int* photo_c
             if (cJSON_IsString(name) && name->valuestring) {
                 strncpy((*photos)[count].name, name->valuestring, sizeof((*photos)[count].name) - 1);
                 (*photos)[count].name[sizeof((*photos)[count].name) - 1] = '\0';
+                sanitize_filename((*photos)[count].name);
+                
                 strncpy((*photos)[count].tag, tag->valuestring, sizeof((*photos)[count].tag) - 1);
                 (*photos)[count].tag[sizeof((*photos)[count].tag) - 1] = '\0';
+                sanitize_filename((*photos)[count].tag);
+                
+                // Skip if filename becomes empty after sanitization
+                if (strlen((*photos)[count].name) == 0) {
+                    continue;
+                }
             }
             
             // Extract date from "d" field
@@ -353,7 +439,7 @@ int main(int argc, char* argv[]) {
     struct http_response response;
     struct photo* photos = NULL;
     int photo_count = 0;
-    char base_path[512];
+    char base_path[MAX_PATH];
     const char* home = getenv("HOME");
     struct cli_options options;
     
@@ -370,7 +456,7 @@ int main(int argc, char* argv[]) {
     
     // Determine target path
     if (options.target_path[0] != '\0') {
-        // Use user-specified path
+        // Use user-specified path (already validated in parse_arguments)
         snprintf(base_path, sizeof(base_path), "%s", options.target_path);
     } else {
         // Use default path
@@ -379,6 +465,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         snprintf(base_path, sizeof(base_path), "%s/Pictures/RicohGRII", home);
+        
+        // Validate the constructed default path
+        if (validate_path(base_path) != 0) {
+            fprintf(stderr, "Error: Invalid default path\n");
+            return 1;
+        }
     }
     
     printf("Target directory: %s\n", base_path);
